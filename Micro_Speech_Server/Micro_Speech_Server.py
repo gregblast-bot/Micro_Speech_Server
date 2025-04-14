@@ -14,7 +14,6 @@ model = genai.GenerativeModel(model_name="gemini-1.5-flash")
 TARGET_DEVICE_NAME = "Nano33BLE"
 TARGET_SERVICE_UUID = "0000180d-0000-1000-8000-00805f9b34fb"
 TARGET_CHARACTERISTIC_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
-TARGET_SERVICE_UUID_COLOR = "f0001110-0451-4000-b000-000000000000"
 TARGET_CHARACTERISTIC_UUID_COLOR_WRITE = "f0001111-0451-4000-b000-000000000000"
 
 MAX_RETRIES = 3  # Maximum number of retry attempts
@@ -28,20 +27,40 @@ async def find_characteristic(client, service_uuid, characteristic_uuid, propert
                     return char
     return None
 
-async def play_color_word_game(client, color_write_characteristic):
+async def handle_user_input(characteristic, data):
+    """Callback function to handle received user input."""
+    user_response = data.decode('utf-8').strip()
+    print(f"Arduino responded: {user_response}")
+    # You'll need a way to correlate this response with the current game state
+    # (e.g., using a global variable or passing state).
+    global latest_user_response
+    latest_user_response = user_response
+
+latest_user_response = None
+
+async def play_color_word_game(client, command_characteristic, color_write_characteristic):
     colors = ["green", "red", "blue"]
     words = ["Yes", "No", "Unknown"]
     score = 0
 
     print("Let's play the color-word game!")
-    print("I will tell you a color, and you say the corresponding word.")
+    print("I will tell you a color, and you say the corresponding word on the Arduino.")
+
+    if not color_write_characteristic or not command_characteristic:
+        print("Error: Could not find the required characteristics.")
+        return
+
+    # Subscribe to notifications for user input
+    await client.start_notify(command_characteristic, handle_user_input)
 
     for _ in range(5):
         chosen_color = random.choice(colors)
         color_index = colors.index(chosen_color)
         correct_word = words[color_index]
+        global latest_user_response
+        latest_user_response = None # Reset for each round
 
-        print(f"Gemini says: The LED will be {chosen_color}.")
+        print(f"Gemini says: The LED will be {chosen_color}. Respond on the Arduino.")
 
         color_byte = 0
         if chosen_color == "green":
@@ -56,20 +75,28 @@ async def play_color_word_game(client, color_write_characteristic):
             print(f"Sent color '{chosen_color}' to Arduino.")
         except Exception as e:
             print(f"Error writing color: {e}")
-            return
+            break
 
-        user_input = await client.read_gatt_char(color_write_characteristic.uuid)
-        print(f"Your input: {user_input.decode('utf-8').strip()}")
+        # Wait for a response from the Arduino (using the notification callback)
+        timeout = 15  # Set a reasonable timeout
+        start_time = asyncio.get_event_loop().time()
+        while latest_user_response is None and (asyncio.get_event_loop().time() - start_time) < timeout:
+            await asyncio.sleep(0.1)
 
-        if user_input == correct_word:
-            print("Correct!")
-            score += 1
+        if latest_user_response is not None:
+            print(f"Your input: {latest_user_response}")
+            if latest_user_response.lower() == correct_word.lower():
+                print("Correct!")
+                score += 1
+            else:
+                print(f"Incorrect. The correct word was '{correct_word}'.")
         else:
-            print(f"Incorrect. The correct word was '{correct_word}'.")
+            print("No response received from Arduino in time.")
 
-        await asyncio.sleep(10)
+        await asyncio.sleep(2) # Short delay between rounds
 
-    print(f"\nGame over! Your final score is {score}/5.")
+    await client.stop_notify(command_characteristic)
+    print(f"\nGame Over! Your final score is: {score}/{len(range(5))}")
 
 async def main():
     devices = await BleakScanner.discover()
@@ -136,7 +163,7 @@ async def main():
                 print(f"Received command: {decoded_data}")
 
                 if decoded_data == "Command: PlayGame":
-                    await play_color_word_game(client, color_write_characteristic)
+                    await play_color_word_game(client, command_characteristic, color_write_characteristic)
 
                 elif decoded_data == "Command: Riddle":
                     print("Asking Gemini...")
