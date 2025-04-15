@@ -12,7 +12,12 @@ key = api_file.readline()
 genai.configure(api_key=key)
 
 # Initialize the Generative Model.
-model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+model = genai.GenerativeModel(model_name="gemini-2.0-flash")
+
+generation_config = genai.types.GenerationConfig(
+    temperature=1.0,
+    top_p=0.95,
+)
 
 # Define bluetooth target device and characteristics.
 TARGET_DEVICE_NAME = "Nano33BLE"
@@ -48,18 +53,48 @@ async def handle_user_input(command_characteristic, data):
     global latest_user_response 
     latest_user_response = user_response
 
+async def get_gemini_color():
+    prompt_parts = ["Respond only with 1, 2, or 3. Pick one randomly."]
+    generation_config = genai.types.GenerationConfig(
+        temperature=0.9,
+        top_p=0.75,
+    )
+    response = await asyncio.to_thread( model.generate_content, prompt_parts, generation_config=generation_config)
+    response = (response.text).strip()
+
+    # Doing numbers instead of colors to prevent model bias.
+    if response == "1":
+        response = "green"
+    elif response == "2":
+        response = "red"
+    elif response == "3":
+        response = "blue"
+
+    # Extract the text response and clean it
+    return response
+
+async def ask_gemini(num_colors=5):
+    colors = []
+    for _ in range(num_colors):
+        color = await get_gemini_color()
+        if color:
+            colors.append(color)
+        else:
+            print("Warning: Could not get a valid color from Gemini.")
+    return colors
 
 # Asynchronous method for playing the color-word game.
 async def play_color_word_game(client, command_characteristic, color_write_characteristic):
     colors = ["green", "red", "blue"]
     words = ["Yes", "No", "Unknown"]
     score = 0
+    i = 0
 
     print("Let's play the color-word game!")
     print("Gemini will tell you a color, and you say the corresponding word into the Arduino.")
 
     print("The corresponding colors and words are: green:Yes, red:No, blue:anything. Remember this!", end='\r')
-    time.sleep(10)
+    time.sleep(1)
 
     # ANSI escape code to clear the line. Clears to the right of the cursor.
     print("\033[K", end='\r')
@@ -74,30 +109,35 @@ async def play_color_word_game(client, command_characteristic, color_write_chara
     # Subscribe to notifications for user input.
     await client.start_notify(command_characteristic, handle_user_input)
 
+    response = await ask_gemini()
+
+    print(f"chosen colors: {response}")
+
     # Begin game loop and randomize choices.
     for _ in range(5):
-        chosen_color = random.choice(colors)
-        color_index = colors.index(chosen_color)
-        correct_word = words[color_index]
         global latest_user_response
         latest_user_response = None
         timeout = 15
 
-        print(f"Gemini says: The LED will be {chosen_color}. Respond on the Arduino.")
+        print("Asking Gemini...")
+        color_index = colors.index(response[i])
+        correct_word = words[color_index]
+
+        print(f"Gemini says: The LED will be {response[i]}. Respond on the Arduino.")
 
         # Convert color into a byte for sending to the Arduino.
         color_byte = 0
-        if chosen_color == "green":
+        if response[i] == "green":
             color_byte = 1
-        elif chosen_color == "red":
+        elif response[i] == "red":
             color_byte = 2
-        elif chosen_color == "blue":
+        elif response[i] == "blue":
             color_byte = 3
 
         # Try to pack the integer into a byte and send it to the Arduino. Wait for an acknowledgment.
         try:
             await client.write_gatt_char(color_write_characteristic.uuid, struct.pack("<B", color_byte), response=True)
-            print(f"Sent color '{chosen_color}' to Arduino.")
+            print(f"Sent color '{response[i]}' to Arduino.")
         except Exception as e:
             print(f"Error writing color: {e}")
             break
@@ -116,6 +156,8 @@ async def play_color_word_game(client, command_characteristic, color_write_chara
                 print(f"Incorrect. The correct word was '{correct_word}'.")
         else:
             print("No response received from Arduino in time.")
+
+        i += 1
 
         # Short delay between rounds.
         await asyncio.sleep(2)
