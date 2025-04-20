@@ -24,6 +24,33 @@ limitations under the License.
 #include "tensorflow/lite/micro/micro_log.h"
 #include <ArduinoBLE.h>  // Include the ArduinoBLE library
 
+// Global variables for wake word detection timing
+unsigned long wakeWordStartTime = 0;
+bool wakeWordDetected = false;
+
+// Function to be called when a potential wake word starts being processed
+void markWakeWordStart() {
+  wakeWordStartTime = micros();
+  wakeWordDetected = false; // Reset the detected flag
+}
+
+// Modify your wake word detection logic to call this when a wake word is found
+void onWakeWordDetected(BLECharacteristic characteristic) {
+  if (wakeWordStartTime != 0 && !wakeWordDetected) {
+    unsigned long wakeWordEndTime = micros();
+    unsigned long latency_us = wakeWordEndTime - wakeWordStartTime;
+    float latency_ms = (float)latency_us / 1000.0;
+    MicroPrintf("Wake word detected in %.2f ms", latency_ms);
+
+    // Send the metric over BLE
+    String metric = "wake_latency:" + String(latency_ms);
+    if (BLE.connected()) {
+      characteristic.writeValue(metric.c_str());
+    }
+    wakeWordStartTime = 0; // Reset
+    wakeWordDetected = true;
+  }
+}
 
 // Toggles the built-in LED every inference, and lights a colored LED depending
 // on which word was detected.
@@ -61,6 +88,7 @@ void RespondToCommand(int32_t current_time, const char* found_command,
   static BLEService bleService("0000180d-0000-1000-8000-00805f9b34fb"); // Service UUID
   static BLEStringCharacteristic bleCharacteristic("00002a37-0000-1000-8000-00805f9b34fb", BLERead | BLEWrite | BLENotify, 20); // Characteristic UUID
   static BLECharacteristic colorWriteCharacteristic("f0001111-0451-4000-b000-000000000000", BLERead | BLEWrite | BLENotify, 1); // Full custom UUID
+  static BLEStringCharacteristic bleMetricsCharacteristic("f0002222-0451-4000-b000-000000000000", BLERead | BLENotify, 50); // Define a characteristic for sending metrics
 
   if (!is_initialized) {
     pinMode(LED_BUILTIN, OUTPUT);
@@ -77,6 +105,8 @@ void RespondToCommand(int32_t current_time, const char* found_command,
     is_initialized = true;
   }
   static int32_t last_command_time = 0;
+  static unsigned long bleSendStartTime = 0;
+  static bool bleSending = false;
   static int count = 0;
 
   if (ble_initialized){
@@ -89,11 +119,12 @@ void RespondToCommand(int32_t current_time, const char* found_command,
   }
 
   if (is_new_command) {
+    markWakeWordStart(); // Mark the start of potential wake word processing
     MicroPrintf("Heard %s (%d) @%dms", found_command, score, current_time);
     // If we hear a command, light up the appropriate LED
-    digitalWrite(LEDR, HIGH);
-    digitalWrite(LEDG, HIGH);
-    digitalWrite(LEDB, HIGH);
+    // digitalWrite(LEDR, HIGH);
+    // digitalWrite(LEDG, HIGH);
+    // digitalWrite(LEDB, HIGH);
 
     if (found_command[0] == 'y') {
       //digitalWrite(LEDG, LOW);   // Green for yes
@@ -109,6 +140,7 @@ void RespondToCommand(int32_t current_time, const char* found_command,
           BLE.setAdvertisedService(bleService);
           bleService.addCharacteristic(bleCharacteristic);   // Add characteristic to the service
           bleService.addCharacteristic(colorWriteCharacteristic);
+          bleService.addCharacteristic(bleMetricsCharacteristic);
           BLE.addService(bleService);   // Add the service to BLE
           colorWriteCharacteristic.setEventHandler(BLEWritten, colorWriteCallback);
           BLE.advertise();
@@ -120,8 +152,13 @@ void RespondToCommand(int32_t current_time, const char* found_command,
       }
 
       MicroPrintf("Yes");
-      // Send data over BLE
-      bleCharacteristic.writeValue("Yes");
+      // Send data over BLE and measure latency
+      if (BLE.connected() && !bleSending) {
+        bleSendStartTime = micros();
+        bleSending = true;
+        onWakeWordDetected(bleMetricsCharacteristic);
+        bleCharacteristic.writeValue("Yes");
+      }
     }
     else if (found_command[0] == 'n') {
       //digitalWrite(LEDR, LOW);   // Red for no
@@ -130,11 +167,21 @@ void RespondToCommand(int32_t current_time, const char* found_command,
       // ble_initialized = false;
       // Send data over BLE
       MicroPrintf("No");
-      bleCharacteristic.writeValue("No");
+      if (BLE.connected() && !bleSending) {
+        bleSendStartTime = micros();
+        bleSending = true;
+        onWakeWordDetected(bleMetricsCharacteristic);
+        bleCharacteristic.writeValue("No");
+      }
     } else if (found_command[0] == 'u') {
       //digitalWrite(LEDB, LOW);   // Blue for unknown
       MicroPrintf("Unknown");
-      bleCharacteristic.writeValue("Unknown");
+      if (BLE.connected() && !bleSending) {
+        bleSendStartTime = micros();
+        bleSending = true;
+        onWakeWordDetected(bleMetricsCharacteristic);
+        bleCharacteristic.writeValue("Unknown");
+      }
     } else {
       // silence
     }
@@ -142,23 +189,36 @@ void RespondToCommand(int32_t current_time, const char* found_command,
     last_command_time = current_time;
   }
 
+  // Check for BLE write completion to measure round-trip time (assuming Python server replies quickly)
+  if (bleSending) {
+    unsigned long bleSendEndTime = micros();
+    unsigned long bleLatency_us = bleSendEndTime - bleSendStartTime;
+    float bleLatency_ms = (float)bleLatency_us / 1000.0;
+    MicroPrintf("BLE write latency: %.2f ms", bleLatency_ms);
+    String metric = "ble_write_latency:" + String(bleLatency_ms);
+    if (BLE.connected()) {
+      bleMetricsCharacteristic.writeValue(metric.c_str());
+    }
+    bleSending = false;
+  }
+  
   // If last_command_time is non-zero but was >3 seconds ago, zero it
   // and switch off the LED.
   if (last_command_time != 0) {
     if (last_command_time < (current_time - 3000)) {
       last_command_time = 0;
-      digitalWrite(LEDR, HIGH);
-      digitalWrite(LEDG, HIGH);
-      digitalWrite(LEDB, HIGH);
+      // digitalWrite(LEDR, HIGH);
+      // digitalWrite(LEDG, HIGH);
+      // digitalWrite(LEDB, HIGH);
     }
   }
 
   // Otherwise, toggle the LED every time an inference is performed.
   ++count;
   if (count & 1) {
-    digitalWrite(LED_BUILTIN, HIGH);
+    //digitalWrite(LED_BUILTIN, HIGH);
   } else {
-    digitalWrite(LED_BUILTIN, LOW);
+    //digitalWrite(LED_BUILTIN, LOW);
   }
 }
 
