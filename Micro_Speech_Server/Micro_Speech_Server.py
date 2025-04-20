@@ -95,7 +95,7 @@ async def get_gemini_color():
     # Extract the text response and clean it
     return response
 
-async def ask_gemini(num_colors=5):
+async def ask_gemini(num_colors=10):
     colors = []
     for _ in range(num_colors):
         color = await get_gemini_color()
@@ -116,7 +116,7 @@ async def play_color_word_game(client, command_characteristic, color_write_chara
     print("Gemini will tell you a color, and you say the corresponding word into the Arduino.")
 
     print("The corresponding colors and words are: green:Yes, red:No, blue:anything. Remember this!", end='\r')
-    time.sleep(1)
+    time.sleep(30)
 
     # ANSI escape code to clear the line. Clears to the right of the cursor.
     print("\033[K", end='\r')
@@ -138,7 +138,7 @@ async def play_color_word_game(client, command_characteristic, color_write_chara
     print(f"chosen colors: {response}")
 
     # Begin game loop and randomize choices.
-    for _ in range(5):
+    for _ in range(10):
         global latest_user_response
         latest_user_response = None
         timeout = 15
@@ -188,7 +188,13 @@ async def play_color_word_game(client, command_characteristic, color_write_chara
 
     # Subscribe to notifications for user input when the game ends.
     await client.stop_notify(command_characteristic)
-    print(f"\nGame Over! Your final score is: {score}/{len(range(5))}")
+    finalscore = score/len(range(10))
+    print(f"\nGame Over! Your final score is: {finalscore}")
+
+    if (finalscore > 0.69):
+        print("You received a passing score! ^_^")
+    else:
+        print("You did not receive a passing score. :'(")
 
 
 # Main function to discover devices and connect to the target device.
