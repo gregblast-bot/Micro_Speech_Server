@@ -45,8 +45,8 @@ async def find_characteristic(client, service_uuid, characteristic_uuid, propert
                     return char
     return None
 
+# Asynchronous method for finding the latency for wake word detection and BLE write.
 async def handle_metrics(characteristic, data):
-    """Callback function to handle received metrics."""
     metric = data.decode('utf-8').strip()
     print(f"Received metric: {metric}")
     if metric.startswith("wake_latency:"):
@@ -71,6 +71,7 @@ async def handle_user_input(command_characteristic, data):
     global latest_user_response 
     latest_user_response = user_response
 
+# Asynchronous method for getting a color from Gemini.
 async def get_gemini_color():
     prompt_parts = ["Respond only with 1, 2, or 3. Pick one randomly."]
     generation_config = genai.types.GenerationConfig(
@@ -95,6 +96,7 @@ async def get_gemini_color():
     # Extract the text response and clean it
     return response
 
+# Asynchronous method for asking Gemini for a list of colors.
 async def ask_gemini(num_colors=10):
     colors = []
     for _ in range(num_colors):
